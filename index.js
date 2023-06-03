@@ -191,7 +191,7 @@ async function run() {
     //create payment intent
     app.post("/create-payment-intent", verifyJWT, async (req, res) => {
       const { price } = req.body;
-      const amount = price * 100;
+      const amount = parseInt(price * 100);
       const paymentIntent = await stripe.paymentIntents.create({
         amount: amount,
         currency: "usd",
@@ -201,7 +201,7 @@ async function run() {
         clientSecret: paymentIntent.client_secret,
       });
     });
- 
+
     //payment related api
     app.post("/payments", verifyJWT, async (req, res) => {
       const payment = req.body;
@@ -214,6 +214,71 @@ async function run() {
 
       res.send({ insertResult, deleteResult });
     });
+
+    //admin statics
+    app.get("/admin-stats",  async (req, res) => {
+      const users = await usersCollection.estimatedDocumentCount();
+      const products = await menuCollection.estimatedDocumentCount();
+      const orders = await paymentCollection.estimatedDocumentCount();
+
+      // best way to get sum of the price field is group and sum operation
+      // can be implement using aggregate of mongodb
+
+      const payments = await paymentCollection.find().toArray();
+      const revenue = payments.reduce((sum, payment) => sum + payment.price, 0);
+
+      res.send({
+        revenue,
+        users,
+        products,
+        orders,
+      });
+    });
+
+    /**
+     * ------------Second-Best-Solution-------------------------
+     * 1. load all payments
+     * 2. for each payments, load the menu items array
+     * 3. for each item in the menu items array get the menu item from the menu collection
+     * 4. put them in an array: all ordered items
+     * 5. Separate all ordered items by category using filter
+     * 6. now get the quantity by length
+     * 7. for each category use reduce to get the total spent on this category
+    */
+    app.get('/order-stats', verifyJWT, verifyAdmin, async(req, res) =>{
+      const pipeline = [
+        {
+          $lookup: { 
+            from: 'menu',
+            localField: 'menuItems',
+            foreignField: '_id',
+            as: 'menuItemsData'
+          }
+        },
+        {
+          $unwind: '$menuItemsData'
+        },
+        {
+          $group: {
+            _id: '$menuItemsData.category',
+            count: { $sum: 1 },
+            total: { $sum: '$menuItemsData.price' }
+          }
+        },
+        {
+          $project: {
+            category: '$_id',
+            count: 1,
+            total: { $round: ['$total', 2] },
+            _id: 0
+          }
+        }
+      ];
+
+      const result = await paymentCollection.aggregate(pipeline).toArray()
+      res.send(result)
+
+    })
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
